@@ -484,11 +484,11 @@ theorem soundness_vs_completeness_separation (k B : Nat) (hB : B < 2 ^ k) :
     omega
 
 -- ============================================================================
--- Section 8: Algebraic-Effect / Interaction-Tree Hint Oracles & Local Completeness
+-- Section 8: Algebraic-Effect / Finite Interaction-Tree Hint Oracles & Local Completeness
 -- ============================================================================
 
 /-- Finite interaction tree (free monad / PolyFun-style request-response tree)
-    parameterized by a query type `Q` and answer function `R : Q → Type`.
+    parameterized by a query type `Q` and answer family `R : Q → Type`.
     Models compiler-agnostic hint requests as algebraic effects (covering Sail
     monadic effects, Pancake FFI interaction trees, and `clean` witgen). -/
 inductive HintITree (Q : Type) (R : Q → Type) (α : Type) where
@@ -505,42 +505,56 @@ def HintITree.bind {Q : Type} {R : Q → Type} {α β : Type} :
 def HintOracle (Q : Type) (R : Q → Type) : Type :=
   (q : Q) → R q
 
-/-- Interpret an interaction tree against a hint oracle `oracle : HintOracle Q R`. -/
+/-- Interpret a finite interaction tree against a hint oracle `oracle : HintOracle Q R`. -/
 def HintITree.interp {Q : Type} {R : Q → Type} {α : Type}
     (oracle : HintOracle Q R) : HintITree Q R α → α
   | .ret a => a
   | .vis q k => HintITree.interp oracle (k (oracle q))
 
-/-- Local hint-correctness specification: `HintSpec q r` asserts that answer `r : R q`
+/-- Local hint-correctness specification: `H q r` asserts that answer `r : R q`
     is a valid witness for the current question `q : Q` (e.g., `a * r ≡ 1 (mod p)`). -/
 def HintQuestionSpec (Q : Type) (R : Q → Type) : Type :=
   (q : Q) → R q → Prop
 
-/-- An oracle is locally honest for `H` if it answers every question `q` with a
-    witness satisfying `H q (oracle q)`. -/
+/-- An oracle is locally honest for `H` on every satisfiable query `q`: whenever a valid
+    witness `r` exists for `q` (`∃ r, H q r`), `oracle q` returns a witness satisfying
+    `H q (oracle q)`. Guarding by `∃ r, H q r` prevents vacuity on partial relations
+    (such as modular inverse at `0` or square root on a non-residue). -/
 def HonestHintOracle {Q : Type} {R : Q → Type}
     (H : HintQuestionSpec Q R) (oracle : HintOracle Q R) : Prop :=
-  ∀ q : Q, H q (oracle q)
+  ∀ q : Q, (∃ r : R q, H q r) → H q (oracle q)
 
-/-- All-paths soundness of an interaction tree `t`: regardless of what answers an
-    untrusted hint oracle supplies at `.vis` nodes, every postcondition satisfies `P`. -/
+/-- Non-vacuity of `HonestHintOracle`: for any inhabited response family `R` and any
+    hint relation `H` (including partial ones), an `HonestHintOracle H` always exists. -/
+theorem exists_honestHintOracle {Q : Type} {R : Q → Type} [∀ q, Inhabited (R q)]
+    (H : HintQuestionSpec Q R) :
+    ∃ oracle : HintOracle Q R, HonestHintOracle H oracle := by
+  classical
+  refine ⟨fun q => if h : ∃ r : R q, H q r then Classical.choose h else default, ?_⟩
+  intro q hq
+  dsimp
+  rw [dif_pos hq]
+  exact Classical.choose_spec hq
+
+/-- All-paths soundness of a finite interaction tree `t`: regardless of what answers an
+    untrusted hint oracle supplies at `.vis` nodes, every leaf satisfies `P`. -/
 def HintITree.AllPathsHold {Q : Type} {R : Q → Type} {α : Type}
     (P : α → Prop) : HintITree Q R α → Prop
   | .ret a => P a
   | .vis q k => ∀ r : R q, HintITree.AllPathsHold P (k r)
 
-/-- Conditional local completeness of an interaction tree `t` under hint assertion `H`:
-    whenever each query `q` receives an answer `r` satisfying `H q r`, the tree
-    reaches a postcondition satisfying `P`. -/
+/-- Conditional local completeness of a finite interaction tree `t` under hint assertion `H`:
+    at each queried `.vis q k` node, a valid witness `r` exists (`∃ r, H q r`) and every
+    valid answer `r` satisfying `H q r` continues to a locally complete subtree. -/
 def HintITree.LocallyComplete {Q : Type} {R : Q → Type} {α : Type}
     (H : HintQuestionSpec Q R) (P : α → Prop) : HintITree Q R α → Prop
   | .ret a => P a
-  | .vis q k => ∀ r : R q, H q r → HintITree.LocallyComplete H P (k r)
+  | .vis q k => (∃ r : R q, H q r) ∧ ∀ r : R q, H q r → HintITree.LocallyComplete H P (k r)
 
 /-- **Soundness of `HintITree` interpretation**:
-    `AllPathsHold P t` is equivalent to `∀ oracle, P (t.interp oracle)`.
-    Specifically, choosing constant-response oracles along a path recovers
-    every branch, matching the `constExpand` equivalence for `HintTape`. -/
+    `AllPathsHold P t` implies `∀ oracle, P (t.interp oracle)`.
+    (`AllPathsHold` is strictly stronger than stateless-oracle soundness because a
+    stateless oracle `Q → R q` returns the same answer if the same query `q` is asked twice.) -/
 theorem hintITree_allPathsHold_implies_forall_oracle {Q : Type} {R : Q → Type} {α : Type}
     (P : α → Prop) (t : HintITree Q R α) (hall : HintITree.AllPathsHold P t)
     (oracle : HintOracle Q R) :
@@ -551,10 +565,9 @@ theorem hintITree_allPathsHold_implies_forall_oracle {Q : Type} {R : Q → Type}
 
 /-- **Local Completeness Decomposition Theorem**:
     If `t` is locally complete with respect to local hint assertions `H` (`LocallyComplete H P t`),
-    and `oracle` answers each individual question `q` honestly (`HonestHintOracle H oracle`),
+    and `oracle` answers each satisfiable question `q` honestly (`HonestHintOracle H oracle`),
     then `P (t.interp oracle)` holds globally.
-    This formalizes Yoichi and Alex's observation that completeness becomes purely local:
-    the prover/oracle only needs to answer the right thing for the current question `q`. -/
+    Completeness is purely local: the oracle only needs to answer the current question `q`. -/
 theorem hintITree_local_completeness {Q : Type} {R : Q → Type} {α : Type}
     (H : HintQuestionSpec Q R) (P : α → Prop) (t : HintITree Q R α)
     (hloc : HintITree.LocallyComplete H P t)
@@ -562,7 +575,9 @@ theorem hintITree_local_completeness {Q : Type} {R : Q → Type} {α : Type}
     P (t.interp oracle) := by
   induction t with
   | ret a => exact hloc
-  | vis q k ih => exact ih (oracle q) (hloc (oracle q) (hhonest q))
+  | vis q k ih =>
+    rcases hloc with ⟨hq_ex, hloc_k⟩
+    exact ih (oracle q) (hloc_k (oracle q) (hhonest q hq_ex))
 
 /-- Monadic composition rule (`bind`) for `LocallyComplete`: local hint assertions
     compose modularly across sequential hinted subroutines without global trace reasoning. -/
@@ -575,10 +590,10 @@ theorem hintITree_locallyComplete_bind {Q : Type} {R : Q → Type} {α β : Type
   induction t with
   | ret a => exact hf a ht
   | vis q k ih =>
-    intro r hr
-    exact ih r (ht r hr)
+    rcases ht with ⟨hq_ex, htk⟩
+    refine ⟨hq_ex, fun r hr => ih r (htk r hr)⟩
 
-/-- A concrete guarded hint-check step: ask question `q`, check `check q r == true`
+/-- A guarded hint-check step: ask question `q`, check `check q r == true`
     in the circuit/guest, and return `some r` on pass or `none` on reject. -/
 def askAndVerifyHint {Q : Type} {R : Q → Type}
     (check : (q : Q) → R q → Bool) (q : Q) : HintITree Q R (Option (R q)) :=
@@ -587,12 +602,13 @@ def askAndVerifyHint {Q : Type} {R : Q → Type}
 /-- `askAndVerifyHint` is both:
     1. **Unconditionally sound** along all paths (`AllPathsHold`): any `some r` output
        satisfies `H q r` regardless of the oracle, provided `check q r = true → H q r`; and
-    2. **Locally complete** (`LocallyComplete`): any oracle satisfying `H q r` (where
-       `H q r → check q r = true`) is guaranteed to produce `some r` with `H q r`. -/
+    2. **Locally complete** (`LocallyComplete`) on any satisfiable query `q` (`∃ r, H q r`):
+       any honest oracle is guaranteed to produce `some r` satisfying `H q r`. -/
 theorem askAndVerifyHint_sound_and_locally_complete {Q : Type} {R : Q → Type}
     (H : HintQuestionSpec Q R) (check : (q : Q) → R q → Bool)
     (hcheck_sound : ∀ q r, check q r = true → H q r)
-    (hcheck_complete : ∀ q r, H q r → check q r = true) (q : Q) :
+    (hcheck_complete : ∀ q r, H q r → check q r = true)
+    (q : Q) (hq : ∃ r : R q, H q r) :
     HintITree.AllPathsHold (fun out => ∀ r, out = some r → H q r) (askAndVerifyHint check q) ∧
       HintITree.LocallyComplete H (fun out => ∃ r, out = some r ∧ H q r) (askAndVerifyHint check q) := by
   constructor
@@ -604,9 +620,35 @@ theorem askAndVerifyHint_sound_and_locally_complete {Q : Type} {R : Q → Type}
       exact hcheck_sound q r hc
     · rw [if_neg hc] at hr'
       cases hr'
-  · intro r hr
+  · refine ⟨hq, fun r hr => ?_⟩
     have hc : check q r = true := hcheck_complete q r hr
     refine ⟨r, ?_, hr⟩
     simp [hc]
+
+/-- Concrete instantiation of `askAndVerifyHint` for the Section 5 modular inverse
+    hint check (`checkModInvHint`): queries a witness `w : Nat` for `(a, p) : Nat × Nat`
+    and verifies `w < p ∧ (a * w) % p = 1 % p` in a single modular multiplication. -/
+def fpInvHintITree (a p : Nat) : HintITree (Nat × Nat) (fun _ => Nat) (Option Nat) :=
+  askAndVerifyHint (fun qp w => checkModInvHint qp.1 w qp.2) (a, p)
+
+/-- Soundness and local completeness of `fpInvHintITree`, bridging Section 8's
+    `HintITree` abstraction to Section 5's `checkModInvHint` / `IsCanonicalModInv`. -/
+theorem fpInvHintITree_sound_and_locally_complete (a p : Nat)
+    (hInv : ∃ w : Nat, IsCanonicalModInv a w p) :
+    HintITree.AllPathsHold
+        (fun out => ∀ w, out = some w → IsCanonicalModInv a w p)
+        (fpInvHintITree a p) ∧
+      HintITree.LocallyComplete
+        (fun (qp : Nat × Nat) (w : Nat) => IsCanonicalModInv qp.1 w qp.2)
+        (fun out => ∃ w, out = some w ∧ IsCanonicalModInv a w p)
+        (fpInvHintITree a p) := by
+  unfold fpInvHintITree
+  exact askAndVerifyHint_sound_and_locally_complete
+    (Q := Nat × Nat) (R := fun _ => Nat)
+    (H := fun (qp : Nat × Nat) (w : Nat) => IsCanonicalModInv qp.1 w qp.2)
+    (check := fun (qp : Nat × Nat) (w : Nat) => checkModInvHint qp.1 w qp.2)
+    (fun _ _ hc => fp_inv_hint_sound hc)
+    (fun _ _ ⟨hlt, heq⟩ => by unfold checkModInvHint; simp [hlt, heq])
+    (a, p) hInv
 
 end RiscvZkvm.Rv64
