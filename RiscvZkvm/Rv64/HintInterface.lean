@@ -1,0 +1,435 @@
+/-
+  RiscvZkvm.Rv64.HintInterface
+
+  Formal Prover Hint Interface (`HintTape` / `HintedInput`) and the
+  `expand` / `verify` architecture (`sig.golf` / `ots.golf`) for RV64IM zkVMs.
+
+  This module formalizes:
+  1. `HintTape` and `HintedInput`: framing a guest's `privateInput` stream into
+     `publicInput ++ hintTape` loaded at `inputBufBase` via `read_input` (`t0 = 0xF2`),
+     with exact `List.take` / `List.drop` slicing and byte-indexing lemmas.
+  2. `ExpandProgram` and `VerifyProgram`: the two-stage prover-hint architecture
+     where an auxiliary `expand` program computes hints `h : HintTape` from
+     public input `x`, and a deterministic `verify` guest consumes `(x, h)` to
+     check a relation `Spec x out`.
+  3. Equivalence of the two soundness formulations (`noHintMakesInvalidPass_iff_forall_expand_sound`):
+     - `NoHintMakesInvalidPass`: `∀ x h out, verify x h out → Spec x out`
+       (no hint tape can make an invalid state transition pass).
+     - `ForallExpandSound`: `∀ (expand : ExpandProgram) x out, verify x (expand x) out → Spec x out`
+       (for every hint generator `expand`, running `verify` on `expand x` is sound).
+     By embedding any hint `h` as the constant hint generator `constExpand h := fun _ => h`,
+     the two formulations are constructively equivalent (`↔`).
+  4. Decoupling of soundness from hint-generation complexity
+     (`soundness_independent_of_expand_cost`):
+     whether hints are produced by a polynomial-time `expand` (e.g., `Fp` / `Fp12`
+     modular inverse or square root) or an unbounded "magic discrete-log" oracle,
+     `verify` soundness depends solely on the algebraic check inside `verify`.
+  5. Concrete algebraic reduction lemmas for hinted EVM precompiles
+     (`fp_inv_hint_sound`, `fp_sqrt_hint_sound`, `dlog_hint_sound`, and concrete
+     field-operation savings for `secp256k1` `ecrecover`, `bn254`, and `bls12381`).
+-/
+
+module
+
+public import RiscvZkvm.Rv64.Execution
+
+@[expose] public section
+
+namespace RiscvZkvm.Rv64
+
+-- ============================================================================
+-- Section 1: HintTape and HintedInput Stream Framing
+-- ============================================================================
+
+/-- An untrusted prover-supplied byte tape. -/
+abbrev HintTape := List (BitVec 8)
+
+/-- Structured guest input separating the canonical public/block input `publicInput`
+    from the untrusted prover hint tape `hintTape`. -/
+structure HintedInput where
+  /-- Canonical public / block input bytes (e.g., SSZ block + state witness). -/
+  publicInput : List (BitVec 8)
+  /-- Untrusted prover-supplied hint tape appended after `publicInput`. -/
+  hintTape    : HintTape
+  deriving DecidableEq, Repr
+
+namespace HintedInput
+
+/-- Concatenate `publicInput` and `hintTape` into a flat `privateInput` stream
+    for `MachineState.privateInput` / `read_input` (`t0 = 0xF2`). -/
+def toStream (hi : HintedInput) : List (BitVec 8) :=
+  hi.publicInput ++ hi.hintTape
+
+/-- Split a flat `privateInput` stream at `publicLen` into `(publicInput, hintTape)`. -/
+def ofStream (publicLen : Nat) (stream : List (BitVec 8)) : HintedInput where
+  publicInput := stream.take publicLen
+  hintTape    := stream.drop publicLen
+
+/-- Total byte length of the combined `publicInput ++ hintTape` stream. -/
+def totalLength (hi : HintedInput) : Nat :=
+  hi.publicInput.length + hi.hintTape.length
+
+/-- Guest memory address where `hintTape` begins when `toStream` is mapped at `bufBase`. -/
+def hintBaseAddr (bufBase : Word) (hi : HintedInput) : Word :=
+  bufBase + BitVec.ofNat 64 hi.publicInput.length
+
+@[simp] theorem length_toStream (hi : HintedInput) :
+    hi.toStream.length = hi.totalLength := by
+  simp [toStream, totalLength, List.length_append]
+
+@[simp] theorem take_toStream (hi : HintedInput) :
+    hi.toStream.take hi.publicInput.length = hi.publicInput := by
+  simp [toStream]
+
+@[simp] theorem drop_toStream (hi : HintedInput) :
+    hi.toStream.drop hi.publicInput.length = hi.hintTape := by
+  simp [toStream]
+
+@[simp] theorem ofStream_toStream (hi : HintedInput) :
+    ofStream hi.publicInput.length hi.toStream = hi := by
+  cases hi
+  simp [ofStream, toStream]
+
+@[simp] theorem toStream_ofStream (publicLen : Nat) (stream : List (BitVec 8)) :
+    (ofStream publicLen stream).toStream = stream := by
+  simp [ofStream, toStream, List.take_append_drop]
+
+theorem toStream_getElem_public (hi : HintedInput) (i : Nat) (hi_lt : i < hi.publicInput.length) :
+    hi.toStream[i]'(by simp [toStream, List.length_append]; omega) = hi.publicInput[i] := by
+  simp [toStream, List.getElem_append_left hi_lt]
+
+theorem toStream_getElem_hint (hi : HintedInput) (k : Nat) (hk_lt : k < hi.hintTape.length) :
+    hi.toStream[hi.publicInput.length + k]'(by simp [toStream, List.length_append]; omega) =
+      hi.hintTape[k] := by
+  simp [toStream, List.getElem_append_right (Nat.le_add_right _ _)]
+
+/-- Load a `HintedInput` into a `MachineState`'s `privateInput` field. -/
+def installInState (s : MachineState) (hi : HintedInput) : MachineState :=
+  { s with privateInput := hi.toStream }
+
+@[simp] theorem installInState_privateInput (s : MachineState) (hi : HintedInput) :
+    (hi.installInState s).privateInput = hi.publicInput ++ hi.hintTape := rfl
+
+@[simp] theorem installInState_take_public (s : MachineState) (hi : HintedInput) :
+    (hi.installInState s).privateInput.take hi.publicInput.length = hi.publicInput := by
+  simp [installInState]
+
+@[simp] theorem installInState_drop_hint (s : MachineState) (hi : HintedInput) :
+    (hi.installInState s).privateInput.drop hi.publicInput.length = hi.hintTape := by
+  simp [installInState]
+
+end HintedInput
+
+-- ============================================================================
+-- Section 2: The `expand` / `verify` Architecture and Soundness Equivalence
+-- ============================================================================
+
+/-- An `ExpandProgram` computes a prover `HintTape` from the public input byte stream. -/
+abbrev ExpandProgram := List (BitVec 8) → HintTape
+
+/-- A `VerifyProgram` is the input-hint-output relation realized by the guest verifier:
+    `verify x h out` holds when the verifier accepts public input `x` with hint `h`
+    and commits public output `out`. -/
+abbrev VerifyProgram := List (BitVec 8) → HintTape → List (BitVec 8) → Prop
+
+/-- A target specification relating public input `x` to valid public output `out`. -/
+abbrev InputOutputSpec := List (BitVec 8) → List (BitVec 8) → Prop
+
+/-- The constant-hint `expand` program that ignores its input and outputs `h`.
+    Formalizes Yoichi Hirai's observation: "for any hint there's a program that
+    outputs that constant hint." -/
+def constExpand (h : HintTape) : ExpandProgram :=
+  fun _ => h
+
+@[simp] theorem constExpand_apply (h : HintTape) (x : List (BitVec 8)) :
+    constExpand h x = h := rfl
+
+/-- Soundness Direction 1 (`NoHintMakesInvalidPass`):
+    No hint tape `h` can cause `verify` to accept an invalid `(x, out)` pair. -/
+def NoHintMakesInvalidPass (verify : VerifyProgram) (Spec : InputOutputSpec) : Prop :=
+  ∀ (x : List (BitVec 8)) (h : HintTape) (out : List (BitVec 8)),
+    verify x h out → Spec x out
+
+/-- Soundness for a specific `expand` program:
+    When hints are generated by `expand`, any output accepted by `verify` satisfies `Spec`. -/
+def ExpandVerifySound (expand : ExpandProgram) (verify : VerifyProgram) (Spec : InputOutputSpec) : Prop :=
+  ∀ (x : List (BitVec 8)) (out : List (BitVec 8)),
+    verify x (expand x) out → Spec x out
+
+/-- Soundness Direction 2 (`ForallExpandSound`):
+    For every hint generator `expand`, the composed `(expand, verify)` pipeline is sound. -/
+def ForallExpandSound (verify : VerifyProgram) (Spec : InputOutputSpec) : Prop :=
+  ∀ (expand : ExpandProgram), ExpandVerifySound expand verify Spec
+
+/-- **Hirai-Schleicher Equivalence Theorem**:
+    "No hint makes an invalid state transition pass" (`NoHintMakesInvalidPass`) is
+    logically equivalent to "For every `expand` program, `verify x (expand x) out`
+    implies `Spec x out`" (`ForallExpandSound`). -/
+theorem noHintMakesInvalidPass_iff_forall_expand_sound
+    (verify : VerifyProgram) (Spec : InputOutputSpec) :
+    NoHintMakesInvalidPass verify Spec ↔ ForallExpandSound verify Spec := by
+  constructor
+  · intro hNoHint expand x out hVer
+    exact hNoHint x (expand x) out hVer
+  · intro hForall x h out hVer
+    exact hForall (constExpand h) x out hVer
+
+/-- Relational variant of `expand`: an arbitrary nondeterministic or multi-step hint
+    relation `R_expand x h` (e.g. a separate RV64 ELF execution producing `h`). -/
+abbrev RelationalExpand := List (BitVec 8) → HintTape → Prop
+
+/-- Soundness against all relational hint generators `R_expand`. -/
+def ForallRelationalExpandSound (verify : VerifyProgram) (Spec : InputOutputSpec) : Prop :=
+  ∀ (R_expand : RelationalExpand) (x : List (BitVec 8)) (h : HintTape) (out : List (BitVec 8)),
+    R_expand x h → verify x h out → Spec x out
+
+/-- Equivalence between `NoHintMakesInvalidPass` and soundness across all relational
+    hint generators `R_expand`. -/
+theorem noHintMakesInvalidPass_iff_forall_relational_expand_sound
+    (verify : VerifyProgram) (Spec : InputOutputSpec) :
+    NoHintMakesInvalidPass verify Spec ↔ ForallRelationalExpandSound verify Spec := by
+  constructor
+  · intro hNoHint _R x h out _hExp hVer
+    exact hNoHint x h out hVer
+  · intro hRel x h out hVer
+    exact hRel (fun _ h' => h' = h) x h out rfl hVer
+
+-- ============================================================================
+-- Section 3: Concrete RV64IM `stepN` Instantiation of `verify` and `expand`
+-- ============================================================================
+
+/-- Concrete RV64IM guest verifier execution: starting from initial machine state
+    `init x h` (which loads `HintedInput.mk x h` into `privateInput`), running `fuel`
+    steps of `stepN` halts with `ECALL` (`t0 = 0`, `a0 = 0`) and `publicValues = out`. -/
+def rv64VerifyProgram (init : HintedInput → MachineState) : VerifyProgram :=
+  fun x h out =>
+    ∃ (fuel : Nat) (s' : MachineState),
+      stepN fuel (init ⟨x, h⟩) = some s' ∧
+      s'.code s'.pc = some .ECALL ∧
+      s'.getReg .x5 = 0#64 ∧
+      s'.getReg .x10 = 0#64 ∧
+      s'.publicValues = out
+
+/-- Concrete RV64IM `expand` execution with explicit cycle count `fuel`:
+    running the `expand` ELF for `fuel` steps on public input `x` halts and writes
+    the generated `HintTape` to `s'.publicValues`. -/
+def rv64ExpandRunsIn (initExpand : List (BitVec 8) → MachineState)
+    (x : List (BitVec 8)) (fuel : Nat) (h : HintTape) : Prop :=
+  ∃ (s' : MachineState),
+    stepN fuel (initExpand x) = some s' ∧
+    s'.code s'.pc = some .ECALL ∧
+    s'.getReg .x5 = 0#64 ∧
+    s'.getReg .x10 = 0#64 ∧
+    s'.publicValues = h
+
+/-- Any RV64IM verifier satisfying `NoHintMakesInvalidPass` is automatically sound
+    when composed with any RV64IM `expand` execution of arbitrary cycle count `fuel`. -/
+theorem rv64Verify_sound_with_rv64Expand
+    (initVerify : HintedInput → MachineState)
+    (initExpand : List (BitVec 8) → MachineState)
+    (Spec : InputOutputSpec)
+    (hSound : NoHintMakesInvalidPass (rv64VerifyProgram initVerify) Spec)
+    (x : List (BitVec 8)) (fuel : Nat) (h : HintTape) (out : List (BitVec 8))
+    (_hExpand : rv64ExpandRunsIn initExpand x fuel h)
+    (hVerify : rv64VerifyProgram initVerify x h out) :
+    Spec x out :=
+  hSound x h out hVerify
+
+-- ============================================================================
+-- Section 4: Computable Hint Cost vs "Magic Discrete-Log" Oracle Hints
+-- ============================================================================
+
+/-- A metered hint generator pairs an `expand` function with the cycle cost
+    `expandCost x` required to compute the hint on input `x`. -/
+structure MeteredExpand where
+  expand     : ExpandProgram
+  expandCost : List (BitVec 8) → Nat
+
+/-- Completeness of `(expand, verify)` within a prover hint-generation budget `B`:
+    for every valid `(x, out)` satisfying `Spec x out`, `expand` produces a hint
+    in `≤ B x` steps that causes `verify` to accept. -/
+def MeteredCompleteness (M : MeteredExpand) (verify : VerifyProgram)
+    (Spec : InputOutputSpec) (B : List (BitVec 8) → Nat) : Prop :=
+  ∀ x out, Spec x out → M.expandCost x ≤ B x ∧ verify x (M.expand x) out
+
+/-- **Soundness Independence from Hint Generation Complexity**:
+    Even if a hint `h` is produced by a "magic discrete-log" oracle with unbounded
+    or non-polynomial cost, `NoHintMakesInvalidPass` guarantees that `verify x h out`
+    still implies `Spec x out`. Soundness is a purely local property of `verify`,
+    while `expandCost` affects only prover completeness/efficiency. -/
+theorem soundness_independent_of_expand_cost
+    (verify : VerifyProgram) (Spec : InputOutputSpec)
+    (hSound : NoHintMakesInvalidPass verify Spec)
+    (M : MeteredExpand) (x : List (BitVec 8)) (out : List (BitVec 8))
+    (hVer : verify x (M.expand x) out) :
+    Spec x out :=
+  hSound x (M.expand x) out hVer
+
+-- ============================================================================
+-- Section 5: Algebraic Precompile Hint Reductions (Fp Inv, Sqrt, Magic DLog)
+-- ============================================================================
+
+/-- Modular exponentiation by repeated squaring (`g^e mod p`), used to model both
+    unhinted Fermat inversion (`a^(p-2) mod p`) / square root (`a^((p+1)/4) mod p`)
+    and discrete-log hint verification (`g^w mod p = y mod p`). -/
+def powMod (base exp modulus : Nat) : Nat :=
+  if h : exp = 0 then
+    1 % modulus
+  else
+    let half := powMod base (exp / 2) modulus
+    let sq := (half * half) % modulus
+    if exp % 2 = 1 then (sq * (base % modulus)) % modulus else sq
+termination_by exp
+decreasing_by exact Nat.div_lt_self (Nat.pos_of_ne_zero h) (by decide)
+
+/-- Predicate asserting `w` is a canonical modular inverse of `a` modulo `p`. -/
+def IsCanonicalModInv (a w p : Nat) : Prop :=
+  w < p ∧ (a * w) % p = 1 % p
+
+/-- Boolean check executed by the hinted guest verifier for `fp_inv`:
+    1 range check (`w < p`) + 1 modular multiplication (`(a * w) % p == 1 % p`). -/
+def checkModInvHint (a w p : Nat) : Bool :=
+  decide (w < p) && decide ((a * w) % p = 1 % p)
+
+/-- Soundness of hinted modular inversion (`fp_inv_hint_sound`):
+    if `checkModInvHint a w p = true`, then `w` is a canonical modular inverse of `a` mod `p`,
+    replacing `p - 2` modular exponentiation (`384` squarings in `Fp384` / `256` in `Fp256`)
+    with a single modular multiplication. -/
+theorem fp_inv_hint_sound {a w p : Nat} (h : checkModInvHint a w p = true) :
+    IsCanonicalModInv a w p := by
+  unfold checkModInvHint IsCanonicalModInv at *
+  revert h
+  cases Decidable.em (w < p) with
+  | inl hlt =>
+    cases Decidable.em ((a * w) % p = 1 % p) with
+    | inl heq =>
+      intro _
+      exact ⟨hlt, heq⟩
+    | inr hneq =>
+      simp [hlt, hneq]
+  | inr hge =>
+    simp [hge]
+
+/-- Uniqueness of modular inverse witnesses modulo `p`:
+    any two canonical inverse hints `w₁, w₂ < p` satisfying `(a * wᵢ) % p = 1 % p`
+    must be identical whenever `(w₁ * a) % p = 1 % p`. -/
+theorem fp_inv_hint_unique {a w₁ w₂ p : Nat}
+    (hw₁ : w₁ < p) (hw₂ : w₂ < p)
+    (h1 : (w₁ * a) % p = 1 % p)
+    (h2 : (a * w₂) % p = 1 % p) :
+    w₁ = w₂ := by
+  have hmul1 : ((w₁ * a) * w₂) % p = w₂ % p := by
+    calc
+      ((w₁ * a) * w₂) % p = (((w₁ * a) % p) * (w₂ % p)) % p := by
+        rw [Nat.mul_mod]
+      _ = ((1 % p) * (w₂ % p)) % p := by rw [h1]
+      _ = (1 * w₂) % p := by rw [← Nat.mul_mod]
+      _ = w₂ % p := by simp
+  have hmul2 : (w₁ * (a * w₂)) % p = w₁ % p := by
+    calc
+      (w₁ * (a * w₂)) % p = ((w₁ % p) * ((a * w₂) % p)) % p := by
+        rw [Nat.mul_mod]
+      _ = ((w₁ % p) * (1 % p)) % p := by rw [h2]
+      _ = (w₁ * 1) % p := by rw [← Nat.mul_mod]
+      _ = w₁ % p := by simp
+  have hassoc : (w₁ * a) * w₂ = w₁ * (a * w₂) := Nat.mul_assoc w₁ a w₂
+  have hmod_eq : w₁ % p = w₂ % p := by
+    rw [← hmul2, ← hassoc, hmul1]
+  rw [Nat.mod_eq_of_lt hw₁, Nat.mod_eq_of_lt hw₂] at hmod_eq
+  exact hmod_eq
+
+/-- Predicate asserting `r` is a canonical modular square root of `a` modulo `p`
+    with parity bit `parity : Bool` (for point decompression in `secp256k1`, `bn254`, `bls12381`). -/
+def IsCanonicalModSqrt (a r p : Nat) (parity : Bool) : Prop :=
+  r < p ∧ (r * r) % p = a % p ∧ (decide (r % 2 = 1) = parity)
+
+/-- Boolean check executed by the hinted guest verifier for `fp_sqrt`:
+    1 range check (`r < p`), 1 modular squaring (`(r * r) % p == a % p`), and 1 parity bit check. -/
+def checkModSqrtHint (a r p : Nat) (parity : Bool) : Bool :=
+  decide (r < p) && decide ((r * r) % p = a % p) && decide (decide (r % 2 = 1) = parity)
+
+/-- Soundness of hinted modular square root (`fp_sqrt_hint_sound`):
+    if `checkModSqrtHint a r p parity = true`, then `r` is a canonical modular square root
+    of `a` modulo `p` with the required parity, replacing `(p + 1) / 4` modular exponentiation
+    with a single modular squaring. -/
+theorem fp_sqrt_hint_sound {a r p : Nat} {parity : Bool}
+    (h : checkModSqrtHint a r p parity = true) :
+    IsCanonicalModSqrt a r p parity := by
+  unfold checkModSqrtHint IsCanonicalModSqrt at *
+  revert h
+  cases Decidable.em (r < p) with
+  | inl hlt =>
+    cases Decidable.em ((r * r) % p = a % p) with
+    | inl hsq =>
+      cases Decidable.em (decide (r % 2 = 1) = parity) with
+      | inl hpar =>
+        intro _
+        exact ⟨hlt, hsq, hpar⟩
+      | inr hpar =>
+        simp [hlt, hsq, hpar]
+    | inr hsq =>
+      simp [hlt, hsq]
+  | inr hlt =>
+    simp [hlt]
+
+/-- Predicate asserting `w` is a discrete logarithm witness for `g^w ≡ y (mod p)`. -/
+def IsDiscreteLogWitness (g y w p : Nat) : Prop :=
+  w < p ∧ powMod g w p = y % p
+
+/-- Boolean check for a "magic discrete-log" hint (`dlog_hint_sound`). -/
+def checkDiscreteLogHint (g y w p : Nat) : Bool :=
+  decide (w < p) && decide (powMod g w p = y % p)
+
+/-- Soundness of a discrete-log hint witness (`dlog_hint_sound`):
+    regardless of how many steps the prover spent finding `w`, checking
+    `checkDiscreteLogHint g y w p = true` guarantees `IsDiscreteLogWitness g y w p`. -/
+theorem dlog_hint_sound {g y w p : Nat} (h : checkDiscreteLogHint g y w p = true) :
+    IsDiscreteLogWitness g y w p := by
+  unfold checkDiscreteLogHint IsDiscreteLogWitness at *
+  revert h
+  cases Decidable.em (w < p) with
+  | inl hlt =>
+    cases Decidable.em (powMod g w p = y % p) with
+    | inl hpow =>
+      intro _
+      exact ⟨hlt, hpow⟩
+    | inr hpow =>
+      simp [hlt, hpow]
+  | inr hlt =>
+    simp [hlt]
+
+-- ============================================================================
+-- Section 6: Field-Multiplication Cost Model for Hinted Precompiles
+-- ============================================================================
+
+/-- Number of base-field multiplications/squarings in unhinted vs hinted operations:
+    - Unhinted `Fp256` inversion (`a^(p-2)` for `secp256k1` / `bn254`): ~256 squarings + 32 muls = 288 field ops.
+    - Hinted `Fp256` inversion (`a * a_inv == 1`): 1 field mul.
+    - Unhinted `Fp256` sqrt (`a^((p+1)/4)`): ~254 squarings + 32 muls = 286 field ops.
+    - Hinted `Fp256` sqrt (`r * r == a`): 1 field squaring.
+    - Unhinted `Fp384` inversion (`a^(p-2)` for `bls12381` in `fp384.pnk`): ~384 squarings + 50 muls = 434 field ops.
+    - Hinted `Fp384` inversion (`a * a_inv == 1`): 1 field mul. -/
+def unhintedFp256InvMuls  : Nat := 288
+def hintedFp256InvMuls    : Nat := 1
+def unhintedFp256SqrtMuls : Nat := 286
+def hintedFp256SqrtMuls   : Nat := 1
+def unhintedFp384InvMuls  : Nat := 434
+def hintedFp384InvMuls    : Nat := 1
+
+/-- In `secp256k1` `ecrecover`, point decompression (`fp_sqrt`) + affine recovery (`fp_inv`)
+    drops from `286 + 288 = 574` field multiplications to `1 + 1 = 2` field multiplications. -/
+theorem ecrecover_hint_mul_reduction :
+    hintedFp256SqrtMuls + hintedFp256InvMuls = 2 ∧
+    unhintedFp256SqrtMuls + unhintedFp256InvMuls = 574 ∧
+    hintedFp256SqrtMuls + hintedFp256InvMuls < unhintedFp256SqrtMuls + unhintedFp256InvMuls := by
+  decide
+
+/-- In `bls12381`, replacing `fp384_inv` (`a^(p-2)`) with a hinted inverse check reduces
+    the base-field inversion cost from `434` `Fp384` multiplications to `1`. -/
+theorem bls12381_fp384_inv_hint_mul_reduction :
+    hintedFp384InvMuls = 1 ∧
+    unhintedFp384InvMuls = 434 ∧
+    hintedFp384InvMuls < unhintedFp384InvMuls := by
+  decide
+
+end RiscvZkvm.Rv64
