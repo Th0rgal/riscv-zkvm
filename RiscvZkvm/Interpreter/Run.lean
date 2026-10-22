@@ -112,12 +112,13 @@ def load (img : Elf64Image) (privateInput : List (BitVec 8) := []) : Loaded := I
   -- each 8-byte slice little-endian so guest `read_input` (`t0 = 0xF2`) + `LBU`/`LD`
   -- reads the exact stream without trapping on `0x80000000`.
   let inputBase : Nat := INPUT_MEM_START
-  let inputLen : Nat := privateInput.length
+  let inputArr : Array (BitVec 8) := privateInput.toArray
+  let inputLen : Nat := inputArr.size
   let mut idx : Nat := 0
   while idx < inputLen do
     let v : Nat := (List.range 8).foldl
       (fun acc k =>
-        let b : Nat := match privateInput[idx + k]? with
+        let b : Nat := match inputArr[idx + k]? with
           | some bv => bv.toNat
           | none => 0
         acc ||| (b <<< (8 * k))) 0
