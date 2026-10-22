@@ -402,33 +402,59 @@ theorem dlog_hint_sound {g y w p : Nat} (h : checkDiscreteLogHint g y w p = true
 -- Section 6: Field-Multiplication Cost Model for Hinted Precompiles
 -- ============================================================================
 
-/-- Number of base-field multiplications/squarings in unhinted vs hinted operations:
-    - Unhinted `Fp256` inversion (`a^(p-2)` for `secp256k1` / `bn254`): ~256 squarings + 32 muls = 288 field ops.
+/-- Structural fuel-bounded step counter for the binary `powMod` algorithm in Section 5:
+    at each non-zero exponent level, `powMod` performs 1 modular squaring plus 1 modular
+    multiplication when `exp % 2 = 1`. -/
+def powModMulCountAux : Nat → Nat → Nat
+  | 0, _ => 0
+  | fuel + 1, exp =>
+    if exp = 0 then 0
+    else powModMulCountAux fuel (exp / 2) + 1 + (if exp % 2 = 1 then 1 else 0)
+
+/-- Field-multiplication count of the binary `powMod` algorithm on an exponent of at most `bits` bits. -/
+def powModMulCount (bits exp : Nat) : Nat :=
+  powModMulCountAux bits exp
+
+/-- secp256k1 base-field prime (`p = 2^256 - 2^32 - 977 = 0xffffffff...fffffc2f`). -/
+def secp256k1P : Nat :=
+  0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f
+
+/-- BLS12-381 base-field prime (`p = 0x1a0111ea...aaab`). -/
+def bls12381P : Nat :=
+  0x1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab
+
+/-- Number of base-field multiplications/squarings in unhinted vs hinted operations,
+    derived directly from `powModMulCount` on the modeled binary exponentiation algorithm:
+    - Unhinted `Fp256` inversion (`a^(p-2)` for `secp256k1`): 256 squarings + 249 muls = 505 field ops.
     - Hinted `Fp256` inversion (`a * a_inv == 1`): 1 field mul.
-    - Unhinted `Fp256` sqrt (`a^((p+1)/4)`): ~254 squarings + 32 muls = 286 field ops.
+    - Unhinted `Fp256` sqrt (`a^((p+1)/4)` for `secp256k1`): 254 squarings + 247 muls = 501 field ops.
     - Hinted `Fp256` sqrt (`r * r == a`): 1 field squaring.
-    - Unhinted `Fp384` inversion (`a^(p-2)` for `bls12381` in `fp384.pnk`): ~384 squarings + 50 muls = 434 field ops.
+    - Unhinted `Fp384` inversion (`a^(p-2)` for `bls12381`): 381 squarings + 229 muls = 610 field ops.
     - Hinted `Fp384` inversion (`a * a_inv == 1`): 1 field mul. -/
-def unhintedFp256InvMuls  : Nat := 288
+def unhintedFp256InvMuls  : Nat := powModMulCount 256 (secp256k1P - 2)
 def hintedFp256InvMuls    : Nat := 1
-def unhintedFp256SqrtMuls : Nat := 286
+def unhintedFp256SqrtMuls : Nat := powModMulCount 256 ((secp256k1P + 1) / 4)
 def hintedFp256SqrtMuls   : Nat := 1
-def unhintedFp384InvMuls  : Nat := 434
+def unhintedFp384InvMuls  : Nat := powModMulCount 384 (bls12381P - 2)
 def hintedFp384InvMuls    : Nat := 1
 
+set_option maxRecDepth 4096 in
 /-- In `secp256k1` `ecrecover`, point decompression (`fp_sqrt`) + affine recovery (`fp_inv`)
-    drops from `286 + 288 = 574` field multiplications to `1 + 1 = 2` field multiplications. -/
+    drops from `501 + 505 = 1006` field multiplications to `1 + 1 = 2` field multiplications. -/
 theorem ecrecover_hint_mul_reduction :
     hintedFp256SqrtMuls + hintedFp256InvMuls = 2 ∧
-    unhintedFp256SqrtMuls + unhintedFp256InvMuls = 574 ∧
+    unhintedFp256SqrtMuls = 501 ∧
+    unhintedFp256InvMuls = 505 ∧
+    unhintedFp256SqrtMuls + unhintedFp256InvMuls = 1006 ∧
     hintedFp256SqrtMuls + hintedFp256InvMuls < unhintedFp256SqrtMuls + unhintedFp256InvMuls := by
   decide
 
+set_option maxRecDepth 4096 in
 /-- In `bls12381`, replacing `fp384_inv` (`a^(p-2)`) with a hinted inverse check reduces
-    the base-field inversion cost from `434` `Fp384` multiplications to `1`. -/
+    the base-field inversion cost from `610` `Fp384` multiplications to `1`. -/
 theorem bls12381_fp384_inv_hint_mul_reduction :
     hintedFp384InvMuls = 1 ∧
-    unhintedFp384InvMuls = 434 ∧
+    unhintedFp384InvMuls = 610 ∧
     hintedFp384InvMuls < unhintedFp384InvMuls := by
   decide
 
@@ -501,7 +527,12 @@ def HintITree.bind {Q : Type} {R : Q → Type} {α β : Type} :
   | .ret a, f => f a
   | .vis q k, f => .vis q (fun r => HintITree.bind (k r) f)
 
-/-- A question-answering hint oracle selects an answer `R q` for each query `q : Q`. -/
+/-- A question-answering hint oracle selects an answer `R q` for each query `q : Q`.
+    Note: because `HintOracle` is a pure function of `q`, asking the same question twice
+    yields the same answer. `HintITree.AllPathsHold` is therefore strictly stronger than
+    quantifying over all `HintOracle`s, and `interp` cannot model a stateful hint tape
+    that returns a fresh answer per request. `hintITree_allPathsHold_implies_forall_oracle`
+    is the one-way implication. -/
 def HintOracle (Q : Type) (R : Q → Type) : Type :=
   (q : Q) → R q
 
