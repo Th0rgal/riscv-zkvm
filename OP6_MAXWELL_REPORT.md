@@ -116,8 +116,16 @@ are broader than the five-item summary in the operation brief.
    `turbo-lean build RiscvZkvm.Rv64` passed. Model pin, forbidden-tactic and
    unimported-module gates passed (105 modules reachable, 2 allowlisted).
    `check-no-warnings.sh` passed (190 jobs; no warnings in hand-owned sources).
-   Full five-library build is still live in generated `Sail.RvfiDii` (session
-   23219; never restarted). The final expanded core axiom sweep passed with 3945 declarations, only
+   The original full five-library build (session 23219) terminated with code
+   137 in generated `Sail.RvfiDii` after 10046 seconds. Its shared 16 GiB
+   cgroup records an OOM kill and heavy memory-high throttling. The Lean
+   checker emitted no source proof error; this is not a passing full build.
+   After authoritative termination, the exact five-library command was
+   submitted as managed job `a6d119d4-d8c3-5b75-8f56-059208b550b0`
+   (action `a2fa7bec-a7f6-45cd-bff7-40277a19bcf5`), with `lean_heavy`
+   resource class and a four-hour deadline. Its live RvfiDii process is in
+   a distinct 16 GiB cgroup, isolated from downstream validation. Poll this
+   job with `get_workspace_job`; do not duplicate a live build. The final expanded core axiom sweep passed with 3945 declarations, only
    the seven documented axioms, and no offenders. The companion audit passed for all 52 declarations
    with the same allowlist and zero offenders. Downstream validation remains: the prepared op2
    consumer is modified for Lean 4.35.0; its source HEAD and the op4 consumer use 4.33.0, while this
