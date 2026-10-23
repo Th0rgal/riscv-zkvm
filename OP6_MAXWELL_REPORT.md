@@ -172,3 +172,13 @@ revision `034bb5a1ed0b757082768d5406206bd2f8e31b7c`, with matching build
 artifacts copied from op1. An op3 import check passed after restoration. The
 companion now uses independent package directories; no package symlinks remain.
 The incident was reported to the user when discovered.
+
+## Compiler bridge inventory
+
+`docs/resumable-hints.md` now inventories the pinned Flapjack FFI/HOL bridge,
+actual evaluator memory-handler/trace results, emitted FFI register/service
+agreement theorems, and conditional instruction-count result. It distinguishes
+these existing Lean results from the outstanding adapter premises. The inspected
+evm.fast source fixes `sourceOracle` and already has host-state replay lemmas;
+no replacement of that fixed Challenge contract or whole-compiler theorem is
+claimed. This is a source inventory, separate from the companion axiom audit.

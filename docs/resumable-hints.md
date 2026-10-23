@@ -63,3 +63,50 @@ This is an experimental ordinary-FFI PoC. Compiler/linker simulation, an
 emitted register-loading/interception stub, generic Flapjack-to-RV64 memory
 refinement, and Sail/platform/backend integration remain separate obligations.
 It neither changes nor proves evm.fast's fixed Challenge oracle contract.
+
+## Existing compiler and FFI bridges
+
+Source inventory at the companion's pinned Flapjack revision
+`034bb5a1ed0b757082768d5406206bd2f8e31b7c`:
+
+- `Flapjack.callFfi_extCall_success_bridge` in `FfiBridge.lean` relates production `callFfi` to
+  `callFFIHOL` under `FfiStateRel`, a byte-ranged nonempty name, the actual
+  oracle-return equation, and equal replacement length. The corresponding
+  `callFfi_extCall_oracleFinal_bridge` and
+  `callFfi_extCall_lengthFailure_bridge` cover failures. These are existing
+  Lean bridges, not obligations to recreate from HOL4.
+- `panValueFfiExtCall_returned_ioEvents_prefix` preserves the incoming trace
+  through the real memory handler. `evalPanValueFfiProgSteps_extCall_memoryHandler`
+  connects the stepped evaluator's ExtCall case to that handler. The present
+  companion calls the authoritative handler directly; it does not instantiate
+  the full compiler theorem.
+- In `RiscV/CorrectnessFfiMachine.lean`,
+  `labCompileAsm_callFfi_execute_agreement` relates a selected service and
+  supplied host behavior to emitted FFI code. `wordFfiToRiscV_execute_agreement`
+  additionally requires register allocation/noninterference and an explicit
+  host/source-handler agreement premise. This is a useful future adapter
+  boundary; it does not discharge that premise for `modinv-v1`.
+- `wordFunctionToRiscVWithCallsAndFfi_counted_simulation_general` retains the
+  emitted code length **given an execution premise**. It is not a proof of a
+  guest cycle budget from trace equivalence alone. Similarly,
+  `cakeCompileSingle_store_correct` is the supported straight-line Store
+  case, not a general end-to-end compiler theorem.
+
+The inspected evm.fast consumer (`op1-init-e-dedup` source snapshot
+`a36739c0762c9504bf3d6bc480fa41230fc7ebfe`) already uses Flapjack's exact
+HOL-shaped source evaluator and fixes `sourceOracle` in
+`InitE/SourceSemantics.lean`. `InitE/OracleReplay.lean` proves
+`evaluate_oracle_consistent` and `target_host_replay` for the actual observed
+host state. Adding the experimental oracle to that fixed challenge source
+would change the contract. This inventory identifies reusable results; it
+makes no new audit or whole-consumer build claim about those external files.
+
+To compose this PoC with a compiled guest, still instantiate the compiler's
+oracle/host agreement, connect its RISC-V state to this repository's
+`MachineState`, prove the concrete call-stub/register/memory relation, and
+preserve the chosen observations and target budget. Ordering, duplication,
+deletion, and branching of requests require their own equivalence proof;
+exact replay here preserves the same request sequence and supplies no such
+compiler transformation permission. Veir-style choice-tree interaction needs
+an adapter and observation theorem, rather than an assumed identification
+with this deterministic scheduler.
