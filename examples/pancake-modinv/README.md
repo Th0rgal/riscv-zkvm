@@ -16,6 +16,13 @@ Lake resolves the parent package through `../..`. The checked-in manifest pins
 all transitive dependencies. A cold checkout must download and build those
 packages; local build artifacts are not required source inputs.
 
+`adaptive_recording_runs` exercises the resumable scheduler with an adaptive
+second question and repeated third question, recording `[(3,6),(6,6),(6,3)]`
+and advancing host state to 3. `adaptive_recorded_replay` uses the general
+recording/replay preservation theorems to reproduce its returned result and
+consume the tape. This scheduler example uses plain natural-number replies
+and makes no arithmetic correctness claim.
+
 `modinv-v1` takes empty configuration and a 24-byte array: little-endian RV64
 words `a`, `p`, `w` at offsets 0, 8, 16. The raw stateful handler returns exactly
 eight bytes. The adapter preserves the first sixteen bytes and replaces the

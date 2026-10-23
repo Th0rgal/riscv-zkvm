@@ -81,6 +81,12 @@ are broader than the five-item summary in the operation brief.
    `generated_replay_preserves` is kernel checked; `recording_transcript` and
    `recorded_replay_preserves` now connect it to actual recording output. The companion checks the
    real Pancake boundary, including malformed and incorrect replies.
+   The companion's `adaptive_recording_runs` explicitly exercises questions
+   3,6,6 with an adaptive second request and repeated third request, externally
+   recorded replies, and host counter 3. `adaptive_recorded_replay` applies the
+   generic preservation theorem and proves the same returned result with the
+   tape fully consumed. This scheduler demonstration asserts no arithmetic
+   contract for its raw replies.
 5. **Pancake buffer wrapper and reproducibility:** inspected
    `op4-stateless-pancaketh/Guest/AccelFfi.lean` and `docs/ACCEL-FFI.md`.
    Convention: empty configuration, self-contained fixed-offset operands,
@@ -126,7 +132,7 @@ are broader than the five-item summary in the operation brief.
    resource class and a four-hour deadline. Its live RvfiDii process is in
    a distinct 16 GiB cgroup, isolated from downstream validation. Poll this
    job with `get_workspace_job`; do not duplicate a live build. The final expanded core axiom sweep passed with 3945 declarations, only
-   the seven documented axioms, and no offenders. The companion audit passed for all 52 declarations
+   the seven documented axioms, and no offenders. The companion audit passed for all 62 declarations
    with the same allowlist and zero offenders. Downstream validation remains: the prepared op2
    consumer is modified for Lean 4.35.0; its source HEAD and the op4 consumer use 4.33.0, while this
    candidate is 4.33.1. No incompatible-toolchain build is reported as validation.

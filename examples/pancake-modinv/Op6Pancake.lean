@@ -1,12 +1,52 @@
 import Flapjack.PanValueFfiSemantics
 import Flapjack.RiscV.PanMemory
 import RiscvZkvm.Rv64.ModInvHints
+import RiscvZkvm.Rv64.HintHandlers
 
 /-! Experimental modinv-v1 integration with Flapjack's actual ordinary FFI.
     This package depends on Mathlib through Flapjack; the parent core does not.
     It does not modify evm.fast's fixed challenge oracle. -/
 namespace Op6Pancake
 open Flapjack RiscvZkvm.Rv64
+
+/-- Small scheduler demonstration: the second question depends on the first
+    reply, and the third repeats the second. Replies carry no certificates. -/
+def adaptiveTick (s : Nat × Nat) : ResumableHints.Event (Nat × Nat) Nat Nat :=
+  if s.1 = 0 then .pending 3 s
+  else if s.1 < 3 then .pending s.2 s
+  else .returned s.2
+
+def adaptiveAccept (_ : Nat) (s : Nat × Nat) (reply : Nat) : Nat × Nat :=
+  (s.1+1,reply)
+
+def adaptiveHandler : ResumableHints.Handler Nat Nat (fun _ => Nat) :=
+  fun _ count => (count+1, if count < 2 then 6 else 3)
+
+def adaptiveRecording := ResumableHints.execute adaptiveTick adaptiveAccept
+  (ResumableHints.recording adaptiveHandler) 1 7 (.running (0,0),(0,[]))
+
+theorem adaptive_recording_runs : adaptiveRecording =
+    (.returned 3, (3, [⟨3,6⟩,⟨6,6⟩,⟨6,3⟩])) := by
+  simp [adaptiveRecording, ResumableHints.execute, ResumableHints.drive,
+    ResumableHints.run, ResumableHints.recording, ResumableHints.resume,
+    adaptiveTick, adaptiveAccept, adaptiveHandler]
+
+theorem adaptive_recorded_replay :
+    ResumableHints.execute adaptiveTick adaptiveAccept
+      (ResumableHints.replayOr (fun _ => 0)) 1 7
+      (.running (0,0),adaptiveRecording.2.2) = (.returned 3,[]) := by
+  have replay := ResumableHints.recorded_replay_preserves adaptiveTick adaptiveAccept
+    adaptiveHandler (fun _ => 0) 1 7 (.running (0,0)) 0
+  have erase := ResumableHints.recording_preserves_execution adaptiveTick adaptiveAccept
+    adaptiveHandler 1 7 (.running (0,0)) 0 []
+  change ResumableHints.execute adaptiveTick adaptiveAccept
+    (ResumableHints.replayOr (fun _ => 0)) 1 7
+    (.running (0,0),adaptiveRecording.2.2) = _ at replay
+  rw [← erase] at replay
+  change ResumableHints.execute adaptiveTick adaptiveAccept
+    (ResumableHints.replayOr (fun _ => 0)) 1 7
+    (.running (0,0),adaptiveRecording.2.2) = (adaptiveRecording.1,[]) at replay
+  simpa only [adaptive_recording_runs] using replay
 
 abbrev Bytes := List UInt8
 
