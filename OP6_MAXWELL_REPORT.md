@@ -93,8 +93,16 @@ are broader than the five-item summary in the operation brief.
    and exact scope.
    `demo_checked_runs` composes actual FFI post-memory reads with `stepN 15`;
    `demo_memory_contract` establishes the inverse contract for the extracted words.
-   The symbolic `pancake_checked_call` uses supplied q,w; generic Flapjack
-   post-writer readback into checker registers remains a separate obligation.
+   `checkedCall` composes the actual FFI with post-memory reads and `stepN 15`.
+   `checkReadback_sound` and `checkedCall_sound` prove the independent contract
+   for the words actually read, for every stateful handler, with no supplied
+   q,w or honest-response premise. The symbolic `pancake_checked_call` uses
+   supplied q,w for its precise event/frame statement. A generic equality
+   between arbitrary post-memory input words and original input words remains
+   separate; the concrete demo and core RV64 installation bridge cover their
+   respective original-input cases. `checkedCall_demo` proves a successful call
+   of the same generic composed function, including read-back words, acceptance
+   flag, and updated host state.
    No proof under the fixed Challenge contract is claimed.
 6. **Execution connection and remaining obligations:** `rvTick` / `stepN_lift`
    connect ordinary execution to this repository's model. `Logic/ModInvHints.lean` proves
@@ -110,7 +118,7 @@ are broader than the five-item summary in the operation brief.
    `check-no-warnings.sh` passed (190 jobs; no warnings in hand-owned sources).
    Full five-library build is still live in generated `Sail.RvfiDii` (session
    23219; never restarted). The final expanded core axiom sweep passed with 3945 declarations, only
-   the seven documented axioms, and no offenders. The companion audit passed for all 42 declarations
+   the seven documented axioms, and no offenders. The companion audit passed for all 52 declarations
    with the same allowlist and zero offenders. Downstream validation remains: the prepared op2
    consumer is modified for Lean 4.35.0; its source HEAD and the op4 consumer use 4.33.0, while this
    candidate is 4.33.1. No incompatible-toolchain build is reported as validation.
@@ -122,7 +130,11 @@ are broader than the five-item summary in the operation brief.
    **not** a passing downstream compatibility result. The isolated checkout and
    artifacts are preserved for resumption once disk capacity is available.
    Only its three dependency/toolchain configuration files differ from HEAD.
-   The original full Sail build was not interrupted.
+   The original full Sail build was not interrupted. Disk availability later
+   recovered to approximately 60 GiB, but the isolated consumer's `.lake`
+   directories had disappeared. Its independent dependencies were restored
+   from the verified companion, and a fresh downstream build is live in
+   session 86863. No source files were lost; no downstream pass is yet claimed.
 
 ## Inspection notes
 

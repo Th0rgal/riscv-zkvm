@@ -50,6 +50,10 @@ the total `replayOr` adapter uses its supplied fallback on those errors.
 The [Pancake modinv companion](../examples/pancake-modinv/README.md) checks
 actual ordinary-FFI buffer replacement, production memory access, a concrete
 post-memory-to-RV64-checker execution, malformed replies, and a memory frame.
+`checkedCall_sound` also proves soundness for every stateful handler after
+running the actual FFI and checking its read-back words. The contract concerns
+those observed words; general preservation of original inputs across arbitrary
+Flapjack memory representations remains separate.
 Its Mathlib dependency is isolated from this package. The protocol uses a
 24-byte little-endian `(a,p,w)` array and an eight-byte raw witness reply.
 The guest checks the independent modular-inverse contract with 15 RV64IM

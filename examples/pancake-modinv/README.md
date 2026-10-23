@@ -38,6 +38,16 @@ prove general post-writer readback; the concrete composed demo proves that path
 for the demonstration inputs. The checker requires `p>1`, `a,w<2^32`, `w<p`, and
 `a*w mod p=1`; the range checks exclude multiplication overflow.
 
+`checkedCall` runs the actual FFI, reads its returned aligned-cell memory,
+and executes `stepN 15` on those read-back values. `checkedCall_sound` proves
+acceptance implies the contract for these actual output words for **any**
+stateful handler. It assumes no supplied operands or honest witness.
+`checkedCall_demo` proves success of that same composed function on the actual
+`(3,17,6)` memory example, including acceptance and host state 1. The
+symbolic `pancake_checked_call` remains useful for its exact event and frame;
+a general link from arbitrary post-memory input words to original input words
+still requires a readback/preservation theorem.
+
 The parent `Logic/ModInvHints.lean` additionally connects canonical bytes to
 `MachineState.readBytes`, original input words, and installation of the witness
 in actual RV64 memory. The checker initializer loads registers from these words

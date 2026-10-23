@@ -223,6 +223,105 @@ theorem malformed_call :
   simp [callFfi, oracle, ModInvHints.buffer, ModInvHints.replaceBuffer,
     ModInvHints.decodeWord, ModInvHints.encodeWord, wire, unwire]
 
+/-- Decode operands from the actual returned aligned-cell memory. -/
+def readOperands (memory : Word → Option (PanValue Word)) (base : Word) :
+    Option (Word × Word × Word) := do
+  let .word a ← memory base | none
+  let .word p ← memory (base+8) | none
+  let .word w ← memory (base+16) | none
+  pure (a,p,w)
+
+/-- Execute the checker on read-back values, retaining the external handler state. -/
+def checkReadback {H : Type} (guest : MachineState)
+    (memory : Word → Option (PanValue Word)) (base : Word) (host : H) :
+    Option (Word × Word × Word × Word × H) := do
+  let (a,p,w) ← readOperands memory base
+  let checked ← stepN 15 (ModInvHints.checkerInit guest ⟨a,p⟩ w)
+  pure (a,p,w,checked.getReg .x5,host)
+
+/-- Actual ordinary FFI call followed by read-back and the authoritative checker.
+    The register initialization remains an explicit mathematical call boundary. -/
+def checkedCall {H : Type}
+    (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte))
+    (guest : MachineState) (memory : Word → Option (PanValue Word))
+    (base : Word) (host : H) (events : List FfiEvent) :
+    Option (Word × Word × Word × Word × H) :=
+  match panValueFfiExtCall access context memory 8 ⟨oracle handler,host,events⟩
+      "modinv-v1" base 0 base 24 with
+  | some (.returned post ffi) => checkReadback guest post base ffi.state
+  | _ => none
+
+theorem checkedCall_demo (guest : MachineState) :
+    checkedCall demoHandler guest demoMemory 0x100 0 [] = some (3,17,6,1,1) := by
+  have equivalent : checkedCall demoHandler guest demoMemory 0x100 0 [] =
+      (do
+        let (a,p,w,count) ← demoObservation
+        let checked ← stepN 15 (ModInvHints.checkerInit guest ⟨a,p⟩ w)
+        pure (a,p,w,checked.getReg .x5,count)) := by
+    unfold checkedCall demoObservation demoCall
+    generalize hc : panValueFfiExtCall access context demoMemory 8
+      ⟨oracle demoHandler, 0, []⟩ "modinv-v1" (0x100 : Word) 0 0x100 24 = result
+    cases result with
+    | none => rfl
+    | some result =>
+      cases result with
+      | final ffi event => rfl
+      | returned post ffi =>
+        cases ha : post (0x100#64) with
+        | none => simp [checkReadback, readOperands, ha]
+        | some av =>
+          cases av <;> simp [checkReadback, readOperands, ha]
+          next a =>
+            cases hp : post (0x108#64) with
+            | none => simp
+            | some pv =>
+              cases pv <;> simp
+              next p =>
+                cases hw : post (0x110#64) with
+                | none => simp
+                | some wv => cases wv <;> simp
+  rw [equivalent, demo_runs]
+  change (stepN 15 (ModInvHints.checkerInit guest ⟨3#64,17#64⟩ 6#64)).bind
+    (fun checked => some (3,17,6,checked.getReg .x5,1)) = _
+  rw [ModInvHints.checker_stepN]
+  change some (3,17,6,(ModInvHints.checkerResult
+    (ModInvHints.checkerInit guest ⟨3#64,17#64⟩ 6#64)).getReg .x5,1) = _
+  rw [ModInvHints.checker_flag]
+  rfl
+
+theorem checkReadback_sound {H : Type} (guest : MachineState)
+    (memory : Word → Option (PanValue Word)) (base : Word) (host : H)
+    (a p w flag : Word) (next : H)
+    (observed : checkReadback guest memory base host = some (a,p,w,flag,next))
+    (accepted : flag = 1#64) : ModInvHints.Contract ⟨a,p⟩ w := by
+  unfold checkReadback at observed
+  cases hd : readOperands memory base with
+  | none => simp [hd] at observed
+  | some operands =>
+    rcases operands with ⟨a0,p0,w0⟩
+    rw [hd] at observed
+    change ((stepN 15 (ModInvHints.checkerInit guest ⟨a0,p0⟩ w0)).bind
+      (fun checked => some (a0,p0,w0,checked.getReg .x5,host))) = _ at observed
+    rw [ModInvHints.checker_stepN] at observed
+    simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at observed
+    rcases observed with ⟨rfl,rfl,rfl,rfl,rfl⟩
+    exact ModInvHints.guest_checker_sound guest _ _ _
+      (ModInvHints.checker_stepN guest _ _) accepted
+
+/-- For every stateful or adversarial handler, acceptance of the actual FFI
+    post-memory implies the independent contract for the words read from it. -/
+theorem checkedCall_sound {H : Type}
+    (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte))
+    (guest : MachineState) (memory : Word → Option (PanValue Word))
+    (base : Word) (host : H) (events : List FfiEvent)
+    (a p w flag : Word) (next : H)
+    (observed : checkedCall handler guest memory base host events = some (a,p,w,flag,next))
+    (accepted : flag = 1#64) : ModInvHints.Contract ⟨a,p⟩ w := by
+  unfold checkedCall at observed
+  split at observed
+  next post ffi _ => exact checkReadback_sound guest post base ffi.state a p w flag next observed accepted
+  next => cases observed
+
 /-- No correctness guarantee is assumed for the oracle; the *guest* checker
     is required before the mathematical postcondition can be concluded. -/
  theorem pancake_checked_call {H : Type}
