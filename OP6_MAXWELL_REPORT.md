@@ -117,8 +117,12 @@ are broader than the five-item summary in the operation brief.
    A fresh isolated consumer at `../op6-evm-asm-consumer` now builds evm-asm
    `7e65e4d02` against this candidate path, Lean 4.33.1, and Mathlib 4.33.1,
    using independent dependency copies and `turbo-lean build --max-memory-mb 12000 EvmAsm`.
-   Its live session is 88927; results are not yet claimed. Only its three
-   dependency/toolchain configuration files differ from the consumer HEAD.
+   Session 88927 was terminated by the disk guard when available space fell
+   below 3 GiB. It produced 64 consumer oleans, but did not complete; this is
+   **not** a passing downstream compatibility result. The isolated checkout and
+   artifacts are preserved for resumption once disk capacity is available.
+   Only its three dependency/toolchain configuration files differ from HEAD.
+   The original full Sail build was not interrupted.
 
 ## Inspection notes
 
