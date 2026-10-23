@@ -27,7 +27,9 @@ explicit errors and non-consuming retries. `generatedTranscript` follows the
 authoritative scheduler. `generated_replay_preserves` proves exact replay of
 that transcript and consumption up to an arbitrary remaining suffix, including
 repeated/adaptive requests and every terminal/suspended control outcome.
-Connecting this generated list to the recording adapter's final list remains.
+`recording_transcript` identifies the generated list with the recording adapter's final list,
+including an existing prefix. `recorded_replay_preserves` gives direct exact replay of the recorded
+output.
 
 `rvTick` connects ordinary progress directly to the authoritative `step`.
 Interception has priority over completion and ordinary stepping; suspension
@@ -52,13 +54,15 @@ are broader than the five-item summary in the operation brief.
    generic operational path implemented. New `ModInvHints.accept` decodes raw
    replies without mathematical checking; `tick` runs the RISC-V checker as an
    explicitly costed 15-instruction macrostep. Malformed replies trap.
-   `replaceBuffer_same_length` proves the array length contract. Full Pancake
-   evaluator binding and byte-memory bridge remain. `validBuffer` and
+   `replaceBuffer_same_length` proves the array length contract. Actual Pancake ordinary-FFI binding
+   and byte-memory bridge are now checked in the isolated companion and `Logic/ModInvHints.lean`.
+   `validBuffer` and
    `checkedCompleteResponse` now validate the entire aligned, non-wrapping
    address footprint before any write. The build includes checked invalid-size,
    unaligned, zero and overflowing-address examples.
 3. **Independent contract and checker proof:** existing `IsCanonicalModInv` is
-   reused; the old natural-number `fp_inv_hint_sound` remains available. `Contract`, `check_sound`, `check_complete`,
+   reused; the old natural-number `fp_inv_hint_sound` remains available. `Contract`, `check_sound`,
+   `check_complete`,
    `checker_stepN`, `checker_flag`, `guest_checker_sound`, and
    `guest_checker_complete` connect the concrete 15-instruction RISC-V checker
    to canonical modular inversion. Codec inverse `decode_encode` is proved.
@@ -71,30 +75,37 @@ are broader than the five-item summary in the operation brief.
 4. **Repeated/adaptive and recording/replay, error/boundary cases:** repeated
    interactions covered by `adversarial_stateful_sound`; recording preservation
    and replay matching/error cases are kernel checked in `HintHandlers`.
-   `generated_replay_preserves` is kernel checked; identifying its generated
-   transcript with the recording adapter output and actual Pancake boundary
-   checking remain.
+   `generated_replay_preserves` is kernel checked; `recording_transcript` and
+   `recorded_replay_preserves` now connect it to actual recording output. The companion checks the
+   real Pancake boundary, including malformed and incorrect replies.
 5. **Pancake buffer wrapper and reproducibility:** inspected
    `op4-stateless-pancaketh/Guest/AccelFfi.lean` and `docs/ACCEL-FFI.md`.
    Convention: empty configuration, self-contained fixed-offset operands,
    same-length array replacement, no writes outside array. `ModInvHints.buffer`,
    `replaceBuffer`, `replaceBuffer_canonical`, and `replaceBuffer_same_length`
-   implement this byte-level convention. Actual Pancake companion remains; the
-   prepared consumer has empty `flapjack`/`evm-asm` submodule directories and
-   no `.lake` dependencies, so evaluator checking needs a separate setup.
+   implement this byte-level convention. The isolated `examples/pancake-modinv` companion pins
+   Flapjack at `034bb5a1ed0b757082768d5406206bd2f8e31b7c` and uses its actual `panValueFfiExtCall`,
+   `callFfi`, and RISC-V byte-memory accessor. `pancake_extCall`, `pancake_write_frame`,
+   `pancake_checked_call`, and `demo_runs` are kernel checked. See the companion README for commands
+   and exact scope.
    No proof under the fixed Challenge contract is claimed.
 6. **Execution connection and remaining obligations:** `rvTick` / `stepN_lift`
-   connect ordinary execution to this repository's model. Concrete hint ABI,
-   buffer/register loading glue, Pancake evaluator, compiler/linker, Sail platform and
-   backend refinements remain; ECALL trapping/CSR semantics alone do not supply
+   connect ordinary execution to this repository's model. `Logic/ModInvHints.lean` proves
+   `readBytes_word`, `readBytes_buffer`, `buffer_memory_replacement`, and
+   `installed_memory_checker_sound`: actual RV64 memory bytes, witness installation, unchanged
+   original inputs, and checker contract. The companion connects the actual Pancake ordinary FFI.
+   Concrete interception ABI, an emitted register-loading call stub, compiler/linker simulation,
+   Sail platform and backend refinements remain; ECALL trapping/CSR semantics alone do not supply
    them. No Sail undefined-value choices are used as hints.
 7. **Repository/downstream checks:** focused kernel checks and
    `turbo-lean build RiscvZkvm.Rv64` passed. Model pin, forbidden-tactic and
-   unimported-module gates passed (104 modules reachable, 2 allowlisted).
+   unimported-module gates passed (105 modules reachable, 2 allowlisted).
    Full five-library build is still live in generated `Sail.RvfiDii` (session
-   23219; never restarted). The axiom sweep passed for the committed interface:
-   3751 declarations, only the seven documented axioms. A fresh expanded sweep
-   is running in session 59913. Downstream validation remains.
+   23219; never restarted). The final expanded core axiom sweep passed with 3945 declarations, only
+   the seven documented axioms, and no offenders. The companion audit passed for all 38 declarations
+   with the same allowlist and zero offenders. Downstream validation remains: the prepared op2
+   consumer is modified for Lean 4.35.0; its source HEAD and the op4 consumer use 4.33.0, while this
+   candidate is 4.33.1. No incompatible-toolchain build is reported as validation.
 
 ## Inspection notes
 
@@ -108,4 +119,13 @@ No Maxwell/research-governor records have been submitted.
 The axiom gate now explicitly imports the `RiscvZkvm.Rv64` root; importing
 only equivalence and logic did not guarantee that newly added optional base
 modules were in the audit environment. The documented seven-element allowlist
-is unchanged. A fresh sweep after this correction is required.
+is unchanged. The expanded sweep passed after this correction (3945 declarations).
+
+## Companion setup incident
+
+During dependency setup, a mistaken package-directory symlink let `lake update`
+remove the shared op3 Flapjack checkout. It was restored at its recorded exact
+revision `034bb5a1ed0b757082768d5406206bd2f8e31b7c`, with matching build
+artifacts copied from op1. An op3 import check passed after restoration. The
+companion now uses independent package directories; no package symlinks remain.
+The incident was reported to the user when discovered.

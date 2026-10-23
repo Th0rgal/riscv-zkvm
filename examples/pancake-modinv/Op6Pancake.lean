@@ -1,0 +1,227 @@
+import Flapjack.PanValueFfiSemantics
+import Flapjack.RiscV.PanMemory
+import RiscvZkvm.Rv64.ModInvHints
+
+/-! Experimental modinv-v1 integration with Flapjack's actual ordinary FFI.
+    This package depends on Mathlib through Flapjack; the parent core does not.
+    It does not modify evm.fast's fixed challenge oracle. -/
+namespace Op6Pancake
+open Flapjack RiscvZkvm.Rv64
+
+abbrev Bytes := List UInt8
+
+def wire (bytes : List ModInvHints.Byte) : Bytes := bytes.map UInt8.ofBitVec
+
+def unwire (bytes : Bytes) : List ModInvHints.Byte := bytes.map UInt8.toBitVec
+
+@[simp] theorem unwire_wire (bytes : List ModInvHints.Byte) : unwire (wire bytes) = bytes := by
+  induction bytes with
+  | nil => rfl
+  | cons b bs ih =>
+    simp only [wire, unwire, List.map_cons] at *
+    rw [ih]
+
+@[simp] theorem wire_length (bytes : List ModInvHints.Byte) : (wire bytes).length = bytes.length := by
+  simp [wire]
+
+/-- A raw stateful handler can supply any eight-byte candidate. Only decoding
+    and framing happen in this host adapter; it does not establish correctness. -/
+def oracle {H : Type} (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte)) :
+    FfiOracle H := fun name host configuration bytes =>
+  if name = .extCall "modinv-v1" then
+    let raw := unwire bytes
+    if configuration = [] ∧ raw.length = 24 then
+      match ModInvHints.decodeWord (raw.take 8), ModInvHints.decodeWord ((raw.drop 8).take 8) with
+      | some a, some p =>
+        let answer := handler ⟨a,p⟩ host
+        match ModInvHints.replaceBuffer [] raw answer.2 with
+        | some replacement => .returned answer.1 (wire replacement)
+        | none => .final .failed
+      | _, _ => .final .failed
+    else .final .failed
+  else .final .failed
+
+ theorem oracle_canonical {H : Type}
+    (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte))
+    (q : ModInvHints.Question) (old w : Word) (h h' : H)
+    (answer : handler q h = (h', ModInvHints.encodeWord w)) :
+    oracle handler (.extCall "modinv-v1") h [] (wire (ModInvHints.buffer q old)) =
+      .returned h' (wire (ModInvHints.buffer q w)) := by
+  have a16 : (ModInvHints.encodeWord q.a).take 16 = ModInvHints.encodeWord q.a :=
+    List.take_of_length_le (by simp)
+  simp [oracle, ModInvHints.buffer, List.take_append,
+    ModInvHints.encodeWord_length, answer, ModInvHints.replaceBuffer, a16]
+
+/-- The actual CakeML FFI boundary enforces same-length array replacement and
+    records an event, retaining the handler's state update. -/
+ theorem callFfi_canonical {H : Type}
+    (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte))
+    (q : ModInvHints.Question) (old w : Word) (h h' : H) (events : List FfiEvent)
+    (answer : handler q h = (h', ModInvHints.encodeWord w)) :
+    callFfi ⟨oracle handler, h, events⟩ (.extCall "modinv-v1") [] (wire (ModInvHints.buffer q old)) =
+      .returned
+        ⟨oracle handler, h', events ++ [⟨.extCall "modinv-v1", [],
+          (wire (ModInvHints.buffer q old)).zip (wire (ModInvHints.buffer q w))⟩]⟩
+        (wire (ModInvHints.buffer q w)) := by
+  apply callFfi_oracle_return
+  · decide
+  · simp
+  · exact oracle_canonical handler q old w h h' answer
+
+/-- Production RISC-V aligned-cell memory operations, not a replacement
+    executable semantics. -/
+def access : PanValueMemoryAccess Word :=
+  panValueMemoryAccessOfModel RiscV.panRiscVMemoryModel
+
+/-- The shared-memory fields are unused by ordinary ExtCall. -/
+def context : PanValueFfiContext Word where
+  sharedDomain := fun _ => false
+  byteAlign := id
+  bigEndian := false
+  wordToBytes := fun w _ => wire (ModInvHints.encodeWord w)
+  wordOfBytes := fun _ bytes => (ModInvHints.decodeWord (unwire bytes)).getD 0
+  wordToByte := fun w => UInt8.ofNat w.toNat
+  byteToWord := fun b => BitVec.ofNat 64 b.toNat
+  valueToNat := BitVec.toNat
+
+/-- Exact ordinary Pancake ExtCall behavior when its owned array contains the
+    canonical buffer. The only post-memory is Flapjack's own byte write-back. -/
+ theorem pancake_extCall {H : Type}
+    (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte))
+    (memory : Word → Option (PanValue Word)) (base : Word)
+    (q : ModInvHints.Question) (old w : Word) (h h' : H) (events : List FfiEvent)
+    (read : panValueFfiReadBytes access context memory 8 base 24 =
+      some (wire (ModInvHints.buffer q old)))
+    (answer : handler q h = (h', ModInvHints.encodeWord w)) :
+    panValueFfiExtCall access context memory 8 ⟨oracle handler,h,events⟩
+      "modinv-v1" base 0 base 24 =
+      some (.returned
+        (panValueFfiWriteBytes access context memory 8 base (wire (ModInvHints.buffer q w)))
+        ⟨oracle handler,h',events ++ [⟨.extCall "modinv-v1", [],
+          (wire (ModInvHints.buffer q old)).zip (wire (ModInvHints.buffer q w))⟩]⟩) := by
+  change (do
+    let configurationBytes ← panValueFfiReadBytes access context memory 8 base 0
+    let arrayBytes ← panValueFfiReadBytes access context memory 8 base 24
+    match callFfi ⟨oracle handler,h,events⟩ (.extCall "modinv-v1") configurationBytes arrayBytes with
+    | .returned ffi bytes => pure (PanValueFfiExtCallResult.returned (panValueFfiWriteBytes access context memory 8 base bytes) ffi)
+    | .final event => pure (PanValueFfiExtCallResult.final ⟨oracle handler,h,events⟩ event)) = _
+  rw [panValueFfiReadBytes, read]
+  simp [callFfi_canonical handler q old w h h' events answer]
+
+/-- Exact aligned-word ownership footprint of the production byte writer. -/
+def Avoid (address : Word) : Nat → Word → Prop
+  | 0, _ => True
+  | n+1, current => current ≠ RiscV.panRiscVByteAlign (8#64) address ∧ Avoid (address+1) n current
+
+ theorem store_byte_frame (memory updated : Word → Option (PanValue Word))
+    (address value current : Word)
+    (h : access.storeByte access.domain memory 8 address value = some updated)
+    (outside : current ≠ RiscV.panRiscVByteAlign (8#64) address) : updated current = memory current := by
+  simp only [access, panValueMemoryAccessOfModel, RiscV.panRiscVMemoryModel,
+    if_true] at h
+  cases hm : memory (RiscV.panRiscVByteAlign (8#64) address) with
+  | none => simp [hm] at h
+  | some cell =>
+    cases cell <;> simp [hm] at h
+    next word =>
+      subst updated
+      simp [outside]
+
+/-- A memory frame theorem for Flapjack's authoritative write-back function.
+    It holds even when a byte store fails, using its defined rollback behavior. -/
+ theorem pancake_write_frame (memory : Word → Option (PanValue Word))
+    (address : Word) (bytes : Bytes) (current : Word)
+    (outside : Avoid address bytes.length current) :
+    panValueFfiWriteBytes access context memory 8 address bytes current = memory current := by
+  induction bytes generalizing memory address with
+  | nil => simp [panValueFfiWriteBytes]
+  | cons byte bytes ih =>
+    rcases outside with ⟨here, rest⟩
+    rw [panValueFfiWriteBytes]
+    cases hs : access.storeByte access.domain
+      (panValueFfiWriteBytes access context memory 8 (address+1) bytes)
+      8 address (context.byteToWord byte) with
+    | none => rfl
+    | some updated =>
+      change updated current = memory current
+      rw [store_byte_frame _ updated address _ current hs here]
+      exact ih memory (address+1) rest
+
+/-- Executable demonstration using the production RISC-V byte access model:
+    @modinv-v1(0x100, 0, 0x100, 24). -/
+def demoMemory : Word → Option (PanValue Word) := fun addr =>
+  if addr == 0x100#64 then some (.word 3)
+  else if addr == 0x108#64 then some (.word 17)
+  else if addr == 0x110#64 then some (.word 0)
+  else none
+
+def demoHandler : ResumableHints.Handler Nat ModInvHints.Question (fun _ => List ModInvHints.Byte) :=
+  fun _ count => (count+1, ModInvHints.encodeWord 6)
+
+def demoCall := panValueFfiExtCall access context demoMemory 8
+  ⟨oracle demoHandler, 0, []⟩ "modinv-v1" 0x100 0 0x100 24
+
+def demoObservation : Option (Word × Word × Word × Nat) := do
+  let .returned memory ffi ← demoCall | none
+  let .word a ← memory 0x100 | none
+  let .word p ← memory 0x108 | none
+  let .word w ← memory 0x110 | none
+  pure (a,p,w,ffi.state)
+
+set_option maxRecDepth 10000 in
+set_option maxHeartbeats 2000000 in
+ theorem demo_runs : demoObservation = some (3,17,6,1) := by
+  simp [demoObservation, demoCall, panValueFfiExtCall, panValueFfiReadBytes,
+    panValueFfiWriteBytes, callFfi, oracle, access, context,
+    panValueMemoryAccessOfModel, panValueWordMemory, RiscV.panRiscVMemoryModel,
+    panModelReadByte, RiscV.panRiscVByteAlign, RiscV.panRiscVGetByte,
+    RiscV.panRiscVByteIndex, RiscV.panRiscVSetByte, demoMemory, demoHandler,
+    wire, unwire, ModInvHints.replaceBuffer, ModInvHints.encodeWord, ModInvHints.decodeWord, packDword, extractByte] <;> decide
+
+/-- An incorrect but well-formed witness is transported; only the guest rejects it. -/
+theorem incorrect_candidate_transported :
+    oracle (fun (_ : ModInvHints.Question) (h : Nat) => (h+1, ModInvHints.encodeWord 5))
+      (.extCall "modinv-v1") 0 [] (wire (ModInvHints.buffer ⟨3,17⟩ 0)) =
+      .returned 1 (wire (ModInvHints.buffer ⟨3,17⟩ 5)) :=
+  oracle_canonical _ _ _ _ _ _ rfl
+
+theorem incorrect_candidate_rejected : ModInvHints.check ⟨3,17⟩ 5 = false := by
+  decide
+
+/-- Malformed replies fail at the real FFI boundary before any write-back. -/
+theorem malformed_call :
+    callFfi ⟨oracle (fun (_ : ModInvHints.Question) (h : Nat) => (h+1, [])), 0, []⟩
+      (.extCall "modinv-v1") [] (wire (ModInvHints.buffer ⟨3,17⟩ 0)) =
+      .final ⟨.extCall "modinv-v1", [], wire (ModInvHints.buffer ⟨3,17⟩ 0), .failed⟩ := by
+  simp [callFfi, oracle, ModInvHints.buffer, ModInvHints.replaceBuffer,
+    ModInvHints.decodeWord, ModInvHints.encodeWord, wire, unwire]
+
+/-- No correctness guarantee is assumed for the oracle; the *guest* checker
+    is required before the mathematical postcondition can be concluded. -/
+ theorem pancake_checked_call {H : Type}
+    (handler : ResumableHints.Handler H ModInvHints.Question (fun _ => List ModInvHints.Byte))
+    (memory : Word → Option (PanValue Word)) (base : Word)
+    (q : ModInvHints.Question) (old w : Word) (h h' : H) (events : List FfiEvent)
+    (read : panValueFfiReadBytes access context memory 8 base 24 =
+      some (wire (ModInvHints.buffer q old)))
+    (answer : handler q h = (h', ModInvHints.encodeWord w))
+    (guest : MachineState)
+    (accepted : (ModInvHints.checkerResult (ModInvHints.checkerInit guest q w)).getReg .x5 = 1#64) :
+    ModInvHints.Contract q w ∧
+    panValueFfiExtCall access context memory 8 ⟨oracle handler,h,events⟩
+      "modinv-v1" base 0 base 24 =
+      some (.returned
+        (panValueFfiWriteBytes access context memory 8 base (wire (ModInvHints.buffer q w)))
+        ⟨oracle handler,h',events ++ [⟨.extCall "modinv-v1", [],
+          (wire (ModInvHints.buffer q old)).zip (wire (ModInvHints.buffer q w))⟩]⟩) ∧
+    ∀ current, Avoid base 24 current →
+      panValueFfiWriteBytes access context memory 8 base (wire (ModInvHints.buffer q w)) current =
+        memory current := by
+  refine ⟨ModInvHints.guest_checker_sound guest _ q w
+    (ModInvHints.checker_stepN guest q w) accepted,
+    pancake_extCall handler memory base q old w h h' events read answer, ?_⟩
+  intro current outside
+  apply pancake_write_frame
+  simpa using outside
+
+end Op6Pancake

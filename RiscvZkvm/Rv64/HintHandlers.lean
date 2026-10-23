@@ -136,4 +136,41 @@ def generatedTranscript {S Q A H : Type} {R : Q → Type}
     | trap =>
       simpa only [generatedTranscript, execute, drive] using ih .trap h
 
+/-- Recording's accumulated list is precisely the transcript used by the
+    replay refinement, even when recording starts with an existing prefix. -/
+ theorem recording_transcript {S Q A H : Type} {R : Q → Type}
+    (tick : S → Event S Q A) (accept : (q : Q) → S → R q → S)
+    (source : Handler H Q R) (fuel n : Nat) (c : Control S Q A) (h : H)
+    (prior : Transcript Q R) :
+    (execute tick accept (recording source) fuel n (c,(h,prior))).2.2 =
+      prior ++ generatedTranscript tick accept source fuel n (c,h) := by
+  induction n generalizing c h prior with
+  | zero => simp [execute, generatedTranscript]
+  | succ n ih =>
+    cases c with
+    | waiting q s =>
+      simp only [execute, drive, recording, resume, generatedTranscript]
+      exact (ih (.running (accept q s (source q h).2)) (source q h).1
+        (prior ++ [⟨q,(source q h).2⟩])).trans
+        (List.append_assoc prior [⟨q,(source q h).2⟩] _)
+    | running s =>
+      simpa only [execute, drive, generatedTranscript] using ih (run tick fuel s) h prior
+    | exhausted s =>
+      simpa only [execute, drive, generatedTranscript] using ih (run tick fuel s) h prior
+    | returned a =>
+      simpa only [execute, drive, generatedTranscript] using ih (.returned a) h prior
+    | trap =>
+      simpa only [execute, drive, generatedTranscript] using ih .trap h prior
+
+/-- Directly replay the output of the stateful recording adapter. -/
+ theorem recorded_replay_preserves {S Q A H : Type} {R : Q → Type} [DecidableEq Q]
+    (tick : S → Event S Q A) (accept : (q : Q) → S → R q → S)
+    (source : Handler H Q R) (fallback : (q : Q) → R q) (fuel n : Nat)
+    (c : Control S Q A) (h : H) :
+    execute tick accept (replayOr fallback) fuel n
+      (c,(execute tick accept (recording source) fuel n (c,(h,[]))).2.2) =
+      ((execute tick accept source fuel n (c,h)).1, []) := by
+  rw [recording_transcript]
+  simpa using generated_replay_preserves tick accept source fallback fuel n c h []
+
 end RiscvZkvm.Rv64.ResumableHints

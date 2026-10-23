@@ -91,3 +91,4 @@ import RiscvZkvm.Rv64.Logic.Tactics.PerfTrace
 import RiscvZkvm.Rv64.Logic.Tactics.XPermTests
 import RiscvZkvm.Rv64.Logic.Tactics.RunBlockTests
 import RiscvZkvm.Rv64.Logic.ResumableHints
+import RiscvZkvm.Rv64.Logic.ModInvHints
