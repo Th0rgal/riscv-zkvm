@@ -3,6 +3,9 @@
 Base: PR #18 at `06736b268f`; branch `op6-riscv-resumable-hints`.
 This report is a progress record, not a completion certificate.
 
+Public API and scope documentation: `docs/resumable-hints.md`; runnable
+consumer documentation: `examples/pancake-modinv/README.md`.
+
 ## Current verified declarations
 
 `RiscvZkvm/Rv64/ResumableHints.lean` adds an operational interface without
@@ -111,6 +114,11 @@ are broader than the five-item summary in the operation brief.
    with the same allowlist and zero offenders. Downstream validation remains: the prepared op2
    consumer is modified for Lean 4.35.0; its source HEAD and the op4 consumer use 4.33.0, while this
    candidate is 4.33.1. No incompatible-toolchain build is reported as validation.
+   A fresh isolated consumer at `../op6-evm-asm-consumer` now builds evm-asm
+   `7e65e4d02` against this candidate path, Lean 4.33.1, and Mathlib 4.33.1,
+   using independent dependency copies and `turbo-lean build --max-memory-mb 12000 EvmAsm`.
+   Its live session is 88927; results are not yet claimed. Only its three
+   dependency/toolchain configuration files differ from the consumer HEAD.
 
 ## Inspection notes
 
