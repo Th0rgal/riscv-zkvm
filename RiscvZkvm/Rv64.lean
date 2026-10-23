@@ -12,3 +12,5 @@ import RiscvZkvm.Rv64.Execution
 import RiscvZkvm.Rv64.HintInterface
 import RiscvZkvm.Rv64.Program
 import RiscvZkvm.Rv64.Bytes
+
+import RiscvZkvm.Rv64.ResumableHints
