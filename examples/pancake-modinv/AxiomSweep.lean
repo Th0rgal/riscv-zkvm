@@ -6,12 +6,7 @@ open Lean
 /-- Declarations under these prefixes are audited. -/
 def scanPrefixes : List Name := [`Op6Pancake]
 
-/-- Import the base root explicitly: equivalence and logic consumers need not
-    import every optional base module (for example, resumable hint adapters).
-    `RiscvZkvm.Rv64.SailEquiv` pulls the narrow
-    `RiscvZkvm.Sail.InstsEnd` slice; importing
-    the full `RiscvZkvm.Sail` root would drag in the very expensive `RvfiDii`
-    module for no benefit here. -/
+/-- Import the isolated consumer; the parent core is audited separately. -/
 def scanModules : Array Import :=
   #[{ module := `Op6Pancake }]
 

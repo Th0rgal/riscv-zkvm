@@ -26,11 +26,16 @@ checks failure through the real FFI boundary.
 
 `demo_runs` kernel checks a complete concrete memory call at address `0x100`:
 input `(3,17,0)` becomes `(3,17,6)` and the host count becomes 1.
+`demo_checked_runs` then reads those actual returned words and executes
+`stepN 15`, proving acceptance and host count 1. `demo_memory_contract` proves
+the independent contract for the actual output words.
 `pancake_extCall` proves the symbolic call, including the exact recorded event.
 `pancake_write_frame` proves that Flapjack's writer preserves every aligned
 memory cell outside its footprint (`Avoid`), including failed-store rollback.
 `pancake_checked_call` combines this boundary and frame with soundness of the
-15-instruction RV64 checker. The checker requires `p>1`, `a,w<2^32`, `w<p`, and
+15-instruction RV64 checker on supplied `q,w`. Its symbolic statement does not
+prove general post-writer readback; the concrete composed demo proves that path
+for the demonstration inputs. The checker requires `p>1`, `a,w<2^32`, `w<p`, and
 `a*w mod p=1`; the range checks exclude multiplication overflow.
 
 The parent `Logic/ModInvHints.lean` additionally connects canonical bytes to

@@ -178,6 +178,33 @@ set_option maxHeartbeats 2000000 in
     RiscV.panRiscVByteIndex, RiscV.panRiscVSetByte, demoMemory, demoHandler,
     wire, unwire, ModInvHints.replaceBuffer, ModInvHints.encodeWord, ModInvHints.decodeWord, packDword, extractByte] <;> decide
 
+/-- Read back the actual FFI post-memory and execute the authoritative RV64
+    checker. Register initialization is the explicit call-boundary operation. -/
+def demoCheckedObservation (guest : MachineState) : Option (Word × Nat) := do
+  let (a,p,w,count) ← demoObservation
+  let checked ← stepN 15 (ModInvHints.checkerInit guest ⟨a,p⟩ w)
+  pure (checked.getReg .x5, count)
+
+theorem demo_checked_runs (guest : MachineState) :
+    demoCheckedObservation guest = some (1,1) := by
+  unfold demoCheckedObservation
+  rw [demo_runs]
+  change (stepN 15 (ModInvHints.checkerInit guest ⟨3#64,17#64⟩ 6#64)).bind
+    (fun checked => some (checked.getReg .x5, 1)) = some (1,1)
+  rw [ModInvHints.checker_stepN]
+  change some ((ModInvHints.checkerResult
+    (ModInvHints.checkerInit guest ⟨3#64,17#64⟩ 6#64)).getReg .x5, 1) = some (1,1)
+  rw [ModInvHints.checker_flag]
+  rfl
+
+/-- The actual FFI output cells satisfy the independent inverse contract. -/
+theorem demo_memory_contract (a p w : Word) (count : Nat)
+    (observed : demoObservation = some (a,p,w,count)) :
+    ModInvHints.Contract ⟨a,p⟩ w := by
+  rw [demo_runs] at observed
+  cases observed
+  exact ModInvHints.check_sound _ _ (by decide)
+
 /-- An incorrect but well-formed witness is transported; only the guest rejects it. -/
 theorem incorrect_candidate_transported :
     oracle (fun (_ : ModInvHints.Question) (h : Nat) => (h+1, ModInvHints.encodeWord 5))

@@ -88,6 +88,10 @@ are broader than the five-item summary in the operation brief.
    `callFfi`, and RISC-V byte-memory accessor. `pancake_extCall`, `pancake_write_frame`,
    `pancake_checked_call`, and `demo_runs` are kernel checked. See the companion README for commands
    and exact scope.
+   `demo_checked_runs` composes actual FFI post-memory reads with `stepN 15`;
+   `demo_memory_contract` establishes the inverse contract for the extracted words.
+   The symbolic `pancake_checked_call` uses supplied q,w; generic Flapjack
+   post-writer readback into checker registers remains a separate obligation.
    No proof under the fixed Challenge contract is claimed.
 6. **Execution connection and remaining obligations:** `rvTick` / `stepN_lift`
    connect ordinary execution to this repository's model. `Logic/ModInvHints.lean` proves
@@ -100,9 +104,10 @@ are broader than the five-item summary in the operation brief.
 7. **Repository/downstream checks:** focused kernel checks and
    `turbo-lean build RiscvZkvm.Rv64` passed. Model pin, forbidden-tactic and
    unimported-module gates passed (105 modules reachable, 2 allowlisted).
+   `check-no-warnings.sh` passed (190 jobs; no warnings in hand-owned sources).
    Full five-library build is still live in generated `Sail.RvfiDii` (session
    23219; never restarted). The final expanded core axiom sweep passed with 3945 declarations, only
-   the seven documented axioms, and no offenders. The companion audit passed for all 38 declarations
+   the seven documented axioms, and no offenders. The companion audit passed for all 42 declarations
    with the same allowlist and zero offenders. Downstream validation remains: the prepared op2
    consumer is modified for Lean 4.35.0; its source HEAD and the op4 consumer use 4.33.0, while this
    candidate is 4.33.1. No incompatible-toolchain build is reported as validation.
